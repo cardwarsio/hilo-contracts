@@ -1,0 +1,115 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+
+# Hardhat
+artifacts/
+cache/
+coverage/
+coverage.json
+typechain/
+typechain-types/
+.openzeppelin/
+hardhat-gas-report.txt
+gas-report.txt
+
+# Build outputs
+dist/
+build/
+out/
+*.sol.js
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store?
+
+# Testing
+.nyc_output/
+coverage/
+*.lcov
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.temp/
+*.bak
+*.backup
+
+# Deployment artifacts
+deployments/
+deployments.local.json
+!deployments/.gitkeep
+
+# ABI (generated)
+abi/
+
+# S3
+policies/
+
+# Contract verification
+.flattened/
+*_flattened.sol
+
+# Foundry (if used)
+forge-cache/
+forge-out/
+broadcast/
+out/
+
+# Slither
+.slither/
+
+# Project specific files
+cards/
+docs/
+metadatas/
+package.json
+package-lock.json
+standard-json-input.json
+tsconfig.json
+hardhat.config.ts
+hardhat-tsconfig.json
+
+# Scripts
+Scripts
+
+# Tests
+test
