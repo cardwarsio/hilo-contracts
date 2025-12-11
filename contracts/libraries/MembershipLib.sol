@@ -10,23 +10,33 @@ library MembershipLib {
         IMarketplace marketplace,
         address user
     ) internal view returns (uint256) {
+        uint256 membershipMultiplier;
+        
         if (address(marketplace) == address(0)) {
-            return Constants.MULTIPLIER_BASIC;
+            membershipMultiplier = Constants.MULTIPLIER_BASIC;
+        } else {
+            (IMarketplace.MembershipTier tier, , uint256 expiresAt) = marketplace.getUserMembership(user);
+            
+            if (expiresAt < block.timestamp) {
+                membershipMultiplier = Constants.MULTIPLIER_BASIC;
+            } else if (tier == IMarketplace.MembershipTier.Pro) {
+                membershipMultiplier = Constants.MULTIPLIER_PRO;
+            } else if (tier == IMarketplace.MembershipTier.Plus) {
+                membershipMultiplier = Constants.MULTIPLIER_PLUS;
+            } else {
+                membershipMultiplier = Constants.MULTIPLIER_BASIC;
+            }
         }
 
-        (IMarketplace.MembershipTier tier, , uint256 expiresAt) = marketplace.getUserMembership(user);
-        
-        if (expiresAt < block.timestamp) {
-            return Constants.MULTIPLIER_BASIC;
-        }
-
-        if (tier == IMarketplace.MembershipTier.Pro) {
-            return Constants.MULTIPLIER_PRO;
-        } else if (tier == IMarketplace.MembershipTier.Plus) {
-            return Constants.MULTIPLIER_PLUS;
+        // Check for active multiplier boost and add it to membership multiplier
+        // Both are stored in 10x format (e.g., 15 = 1.5x, 20 = 2x)
+        (uint256 boostMultiplier, ) = marketplace.getMultiplierBoost(user);
+        if (boostMultiplier > 0) {
+            // Add boost to membership multiplier (both in 10x format)
+            return membershipMultiplier + boostMultiplier;
         }
         
-        return Constants.MULTIPLIER_BASIC;
+        return membershipMultiplier;
     }
 
     function getStreakBonus(
@@ -58,6 +68,13 @@ library MembershipLib {
             if (currentStreak >= Constants.STREAK_THRESHOLD_LOW) {
                 return Constants.STREAK_BONUS_PLUS_LOW;
             }
+        } else if (tier == IMarketplace.MembershipTier.Basic) {
+            if (currentStreak >= Constants.STREAK_THRESHOLD_HIGH) {
+                return Constants.STREAK_BONUS_BASIC_HIGH;
+            }
+            if (currentStreak >= Constants.STREAK_THRESHOLD_LOW) {
+                return Constants.STREAK_BONUS_BASIC_LOW;
+            }
         }
         
         return 0;
@@ -72,7 +89,8 @@ library MembershipLib {
             ? Constants.BASE_SUPERGEM_SUIT_WIN 
             : Constants.BASE_SUPERGEM_WIN;
         
-        return (baseSuperGem * multiplier) + streakBonus;
+        // Multipliers are stored as 10x (e.g., 15 = 1.5x), so divide by 10
+        return ((baseSuperGem * multiplier) / 10) + streakBonus;
     }
 }
 

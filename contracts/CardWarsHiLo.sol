@@ -39,7 +39,6 @@ contract CardWarsHiLo is
     using ECDSA for bytes32;
 
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
-    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
 
     receive() external payable {
         revert("Direct ETH transfers not allowed");
@@ -131,19 +130,6 @@ contract CardWarsHiLo is
         uint256 currentNumber,
         uint256 newNumber,
         uint256 timestamp
-    );
-
-    event BatchGuessResult(
-        address indexed user,
-        uint256 indexed timestamp,
-        uint256 batchSize,
-        uint256 totalWins,
-        uint256 totalSuperGems,
-        uint256 finalStreak,
-        uint256 totalPlays,
-        uint256 totalWinsAfter,
-        uint256 totalSuperGemsAfter,
-        uint256 bestStreakAfter
     );
 
     event StatsUpdated(
@@ -244,7 +230,6 @@ contract CardWarsHiLo is
         });
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
-        _grantRole(BURNER_ROLE, msg.sender);
         _pause(); // Start paused for safety
     }
 
@@ -579,7 +564,14 @@ contract CardWarsHiLo is
         ctx.completeChecks();
 
         ctx.requireEffects();
+        
+        // Cache storage values to memory to reduce SLOAD operations
         uint256 currentNumber = userStats.currentNumber;
+        uint256 currentStreak = userStats.streak;
+        uint256 currentBestStreak = userStats.bestStreak;
+        uint256 currentSuperGemPoints = userStats.superGemPoints;
+        uint256 currentTotalPlays = userStats.totalPlays;
+        uint256 currentTotalWins = userStats.totalWins;
 
         bool isWin = false;
         bool isJokerWin = false;
@@ -594,7 +586,7 @@ contract CardWarsHiLo is
             uint256 dummyNumber;
             uint8 dummySuitRaw;
             (dummyNumber, dummySuitRaw) = msg.sender.generateCard(
-                userStats.totalPlays
+                currentTotalPlays
             );
             newNumber = dummyNumber;
             if (newNumber == 0) {
@@ -612,7 +604,7 @@ contract CardWarsHiLo is
             // Generate new card (can be Joker or normal card)
             uint8 newSuitRaw;
             (newNumber, newSuitRaw) = msg.sender.generateCard(
-                userStats.totalPlays
+                currentTotalPlays
             );
 
             if (newNumber == 0) {
@@ -633,10 +625,14 @@ contract CardWarsHiLo is
             );
         }
 
-        uint256 oldBestStreak = userStats.bestStreak;
-        uint256 oldStreak = userStats.streak;
+        uint256 oldBestStreak = currentBestStreak;
+        uint256 oldStreak = currentStreak;
 
-        userStats.totalPlays++;
+        // Increment total plays (unchecked - no overflow risk in practice)
+        unchecked {
+            currentTotalPlays++;
+        }
+
         uint256 superGemEarned = 0;
         uint256 achievementBonus = 0;
 
@@ -644,19 +640,28 @@ contract CardWarsHiLo is
 
         if (isWin) {
             // Increment consecutive correct guesses for achievements (in a row)
-            consecutiveCorrectGuesses[msg.sender]++;
+            uint256 consecutive = consecutiveCorrectGuesses[msg.sender];
+            unchecked {
+                consecutive++;
+            }
+            consecutiveCorrectGuesses[msg.sender] = consecutive;
 
-            // Check for achievement milestones (5, 10, 20 in a row)
+            // Check for achievement milestones (5, 10, 20 in a row) - only check at milestones
+            // Optimize: Only check when consecutive is a multiple of 5 or at specific milestones
+            if (consecutive == Constants.ACHIEVEMENT_MILESTONE_5 || 
+                consecutive == Constants.ACHIEVEMENT_MILESTONE_10 || 
+                consecutive == Constants.ACHIEVEMENT_MILESTONE_20) {
             achievementBonus = _checkAchievements(msg.sender);
+            }
 
             // If user made suit prediction and it's wrong, streak breaks and lose 3 SuperGems
             if (madeSuitPrediction && !isSuitWin) {
                 superGemEarned = 0;
                 // Streak breaks when suit prediction is wrong
-                uint256 suitOldStreak = userStats.streak;
+                uint256 suitOldStreak = currentStreak;
                 consecutiveCorrectGuesses[msg.sender] = 0;
 
-                // Check for streak protection
+                // Check for streak protection - cache marketplace contract
                 CardWarsMarketplace marketplaceContractSuit = CardWarsMarketplace(
                         payable(address(marketplace))
                     );
@@ -667,30 +672,35 @@ contract CardWarsHiLo is
                 if (hasProtection) {
                     // Streak protection active - don't break streak, consume protection
                     marketplaceContractSuit.consumeStreakProtection(msg.sender);
-                } else if (userStats.streak > 0) {
+                    // Keep streak unchanged
+                } else if (currentStreak > 0) {
                     emit StreakBroken(
                         msg.sender,
                         block.timestamp,
                         suitOldStreak
                     );
-                    userStats.streak = 0;
+                    currentStreak = 0;
                 }
 
                 // Deduct 3 SuperGems for wrong suit prediction
                 uint256 penalty = Constants.SUIT_WRONG_PENALTY;
-                if (userStats.superGemPoints >= penalty) {
-                    userStats.superGemPoints -= penalty;
+                if (currentSuperGemPoints >= penalty) {
+                    currentSuperGemPoints -= penalty;
                 } else {
                     // If user doesn't have enough SuperGems, set to 0
-                    userStats.superGemPoints = 0;
+                    currentSuperGemPoints = 0;
                 }
 
                 // Still count as a win for totalWins
-                userStats.totalWins++;
+                unchecked {
+                    currentTotalWins++;
+                }
             } else {
                 // Normal win or correct suit prediction
-                userStats.streak++;
-                userStats.totalWins++;
+                unchecked {
+                    currentStreak++;
+                    currentTotalWins++;
+                }
 
                 uint256 multiplier = MembershipLib.getMultiplier(
                     marketplace,
@@ -699,7 +709,7 @@ contract CardWarsHiLo is
                 uint256 streakBonus = MembershipLib.getStreakBonus(
                     marketplace,
                     msg.sender,
-                    userStats.streak
+                    currentStreak
                 );
                 superGemEarned = MembershipLib.calculateSuperGems(
                     isSuitWin,
@@ -712,11 +722,15 @@ contract CardWarsHiLo is
                     superGemEarned = GuessLib.applyJokerBonus(superGemEarned);
                 }
 
-                userStats.superGemPoints += superGemEarned;
+                unchecked {
+                    currentSuperGemPoints += superGemEarned;
+                }
 
                 // Add achievement bonus
                 if (achievementBonus > 0) {
-                    userStats.superGemPoints += achievementBonus;
+                    unchecked {
+                        currentSuperGemPoints += achievementBonus;
+                    }
                 }
 
                 // Update weekly leaderboard for player
@@ -725,8 +739,8 @@ contract CardWarsHiLo is
                     superGemEarned + achievementBonus
                 );
 
-                if (userStats.streak > userStats.bestStreak) {
-                    userStats.bestStreak = userStats.streak;
+                if (currentStreak > currentBestStreak) {
+                    currentBestStreak = currentStreak;
                 }
             }
         } else {
@@ -745,15 +759,15 @@ contract CardWarsHiLo is
 
                 // Deduct 1 SuperGem for tie (wrong guess)
                 uint256 penalty = Constants.HILO_WRONG_PENALTY;
-                if (userStats.superGemPoints >= penalty) {
-                    userStats.superGemPoints -= penalty;
+                if (currentSuperGemPoints >= penalty) {
+                    currentSuperGemPoints -= penalty;
                 } else {
                     // If user doesn't have enough SuperGems, set to 0
-                    userStats.superGemPoints = 0;
+                    currentSuperGemPoints = 0;
                 }
             } else {
                 // Hi-Lo guess was wrong (not a tie) - check for streak protection
-                uint256 hiloOldStreak = userStats.streak;
+                uint256 hiloOldStreak = currentStreak;
                 consecutiveCorrectGuesses[msg.sender] = 0;
                 CardWarsMarketplace marketplaceContractGuess = CardWarsMarketplace(
                         payable(address(marketplace))
@@ -767,28 +781,35 @@ contract CardWarsHiLo is
                     marketplaceContractGuess.consumeStreakProtection(
                         msg.sender
                     );
-                } else if (userStats.streak > 0) {
+                    // Keep streak unchanged
+                } else if (currentStreak > 0) {
                     emit StreakBroken(
                         msg.sender,
                         block.timestamp,
                         hiloOldStreak
                     );
-                    userStats.streak = 0;
+                    currentStreak = 0;
                 }
 
                 // Deduct 1 SuperGem for wrong HiLo guess
                 uint256 penalty = Constants.HILO_WRONG_PENALTY;
-                if (userStats.superGemPoints >= penalty) {
-                    userStats.superGemPoints -= penalty;
+                if (currentSuperGemPoints >= penalty) {
+                    currentSuperGemPoints -= penalty;
                 } else {
                     // If user doesn't have enough SuperGems, set to 0
-                    userStats.superGemPoints = 0;
+                    currentSuperGemPoints = 0;
                 }
             }
         }
 
+        // Write cached values back to storage
         userStats.currentNumber = newNumber;
         userStats.currentSuit = newSuit;
+        userStats.streak = currentStreak;
+        userStats.totalPlays = currentTotalPlays;
+        userStats.totalWins = currentTotalWins;
+        userStats.superGemPoints = currentSuperGemPoints;
+        userStats.bestStreak = currentBestStreak;
 
         // Emit Joker card event if Joker was drawn
         if (newNumber == 0) {
@@ -806,16 +827,16 @@ contract CardWarsHiLo is
         ctx.completeEffects();
 
         ctx.requireInteractions();
-        uint256 winRate = userStats.totalPlays > 0
-            ? (userStats.totalWins * 100) / userStats.totalPlays
+        uint256 winRate = currentTotalPlays > 0
+            ? (currentTotalWins * 100) / currentTotalPlays
             : 0;
 
-        if (oldBestStreak < userStats.bestStreak) {
+        if (oldBestStreak < currentBestStreak) {
             emit BestStreakUpdated(
                 msg.sender,
                 block.timestamp,
                 oldBestStreak,
-                userStats.bestStreak
+                currentBestStreak
             );
         }
 
@@ -832,22 +853,22 @@ contract CardWarsHiLo is
             newSuit,
             isWin,
             isSuitWin,
-            userStats.streak,
+            currentStreak,
             superGemEarned + achievementBonus,
-            userStats.totalPlays,
-            userStats.totalWins,
-            userStats.superGemPoints,
-            userStats.bestStreak
+            currentTotalPlays,
+            currentTotalWins,
+            currentSuperGemPoints,
+            currentBestStreak
         );
 
         emit StatsUpdated(
             msg.sender,
             block.timestamp,
-            userStats.totalPlays,
-            userStats.totalWins,
-            userStats.superGemPoints,
-            userStats.bestStreak,
-            userStats.streak,
+            currentTotalPlays,
+            currentTotalWins,
+            currentSuperGemPoints,
+            currentBestStreak,
+            currentStreak,
             winRate
         );
 
@@ -863,426 +884,6 @@ contract CardWarsHiLo is
                 isSuitWin,
                 isJokerWin
             )
-        );
-    }
-
-    function batchGuess(
-        uint8[] memory guessTypes, // 0=Lower, 1=Joker, 2=Higher
-        Suit[] memory guessedSuits,
-        bool useBurnIt // Manual Burn It usage for all guesses in batch
-    ) external nonReentrant whenNotPaused {
-        CEILib.CEIContext memory ctx;
-        ctx.init();
-
-        ctx.requireChecks();
-        if (
-            guessTypes.length != guessedSuits.length || guessTypes.length == 0
-        ) {
-            revert InvalidBatchSize();
-        }
-
-        // Validate guess types
-        for (uint256 i = 0; i < guessTypes.length; i++) {
-            if (guessTypes[i] > 2) {
-                revert InvalidGuessType();
-            }
-        }
-
-        IBoost boostContract = IBoost(address(marketplace));
-        IBoost.ActiveBoost memory boost = boostContract.getUserBoost(
-            msg.sender
-        );
-
-        if (boost.boostType != IBoost.BoostType.TxBoost) {
-            revert BoostNotActive();
-        }
-
-        if (boost.expiresAt < block.timestamp) {
-            revert BoostExpired();
-        }
-
-        if (boost.remainingUses < guessTypes.length) {
-            revert NoRemainingUses();
-        }
-
-        HiLoStats storage userStats = stats[msg.sender];
-
-        if (userStats.currentNumber == 0) {
-            revert GameNotStarted();
-        }
-
-        // Check daily free guesses and calculate required extra credits
-        uint256 currentDay = block.timestamp / 1 days;
-        uint256 remainingFreeGuesses = 0;
-
-        // Reset daily count if it's a new day
-        if (lastGuessDay[msg.sender] != currentDay) {
-            dailyGuessCount[msg.sender] = 0;
-            lastGuessDay[msg.sender] = currentDay;
-        }
-
-        // Calculate remaining free guesses
-        if (dailyGuessCount[msg.sender] < Constants.DAILY_FREE_GUESSES) {
-            remainingFreeGuesses =
-                Constants.DAILY_FREE_GUESSES -
-                dailyGuessCount[msg.sender];
-        }
-
-        // Handle Burn It usage (only for first guess in batch if enabled)
-        uint256 effectiveBatchSize = guessTypes.length;
-        if (useBurnIt) {
-            // Check and consume Burn It credit for first guess
-            CardWarsMarketplace marketplaceContract = CardWarsMarketplace(
-                payable(address(marketplace))
-            );
-            if (!marketplaceContract.consumeBurnIt(msg.sender, 1)) {
-                revert InsufficientCredits(); // User doesn't have Burn It credits
-            }
-            effectiveBatchSize -= 1; // First guess uses Burn It, reduce batch size for credit calculation
-        }
-
-        // Calculate how many extra credits are needed (excluding Burn It guess)
-        uint256 requiredCredits = 0;
-        if (effectiveBatchSize > remainingFreeGuesses) {
-            requiredCredits = effectiveBatchSize - remainingFreeGuesses;
-        }
-
-        // Check if user has enough extra credits if needed
-        if (requiredCredits > 0) {
-            uint256 userCredits = marketplace.getUserExtraCredits(msg.sender);
-            if (userCredits < requiredCredits) {
-                revert InsufficientCredits();
-            }
-        }
-
-        ctx.completeChecks();
-
-        ctx.requireEffects();
-        uint256 oldBestStreak = userStats.bestStreak;
-        uint256 totalWins = 0;
-        uint256 totalSuperGems = 0;
-        uint256 currentNumber = userStats.currentNumber;
-        Suit currentSuit = userStats.currentSuit;
-
-        for (uint256 i = 0; i < guessTypes.length; i++) {
-            // Generate new card (can be Joker or normal card)
-            (uint256 newNumber, uint8 newSuitRaw) = msg.sender.generateCard(
-                userStats.totalPlays + i
-            );
-            Suit newSuit;
-
-            if (newNumber == 0) {
-                // Joker card
-                newSuit = Suit.Joker;
-            } else {
-                // Normal card
-                newSuit = Suit(newSuitRaw + 1); // +1 because Suit.None = 0
-            }
-
-            // Determine if guess is correct using GuessLib
-            bool madeSuitPrediction = (guessedSuits[i] != Suit.None);
-            bool isWin;
-            bool isJokerWin;
-            bool isSuitWin;
-
-            if (useBurnIt && i == 0) {
-                // First guess uses Burn It: auto-correct
-                isWin = true;
-                isJokerWin = (newNumber == 0);
-                // Auto-correct suit prediction if made
-                isSuitWin = madeSuitPrediction
-                    ? (guessedSuits[i] == newSuit)
-                    : false;
-            } else {
-                // Normal guess evaluation
-                (isWin, isJokerWin, isSuitWin) = GuessLib.evaluateGuess(
-                    guessTypes[i],
-                    uint8(guessedSuits[i]),
-                    currentNumber,
-                    newNumber,
-                    uint8(newSuit)
-                );
-            }
-
-            userStats.totalPlays++;
-            uint256 superGemEarned = 0;
-            uint256 achievementBonus = 0;
-
-            if (isWin) {
-                // Increment consecutive correct guesses for achievements (in a row)
-                consecutiveCorrectGuesses[msg.sender]++;
-
-                // Check for achievement milestones (5, 10, 20 in a row)
-                achievementBonus = _checkAchievements(msg.sender);
-
-                // If user made suit prediction and it's wrong, streak breaks and lose 3 SuperGems
-                if (madeSuitPrediction && !isSuitWin) {
-                    superGemEarned = 0;
-                    // Streak breaks when suit prediction is wrong
-                    uint256 batchSuitOldStreak = userStats.streak;
-                    consecutiveCorrectGuesses[msg.sender] = 0;
-
-                    // Check for streak protection
-                    IMarketplace marketplaceInterface = marketplace;
-                    bool hasProtection = CardWarsMarketplace(
-                        payable(address(marketplaceInterface))
-                    ).streakProtection(msg.sender);
-
-                    if (hasProtection) {
-                        // Streak protection active - don't break streak, consume protection
-                        CardWarsMarketplace(
-                            payable(address(marketplaceInterface))
-                        ).consumeStreakProtection(msg.sender);
-                    } else if (userStats.streak > 0) {
-                        emit StreakBroken(
-                            msg.sender,
-                            block.timestamp,
-                            batchSuitOldStreak
-                        );
-                        userStats.streak = 0;
-                    }
-
-                    // Deduct 3 SuperGems for wrong suit prediction
-                    uint256 penalty = Constants.SUIT_WRONG_PENALTY;
-                    if (userStats.superGemPoints >= penalty) {
-                        userStats.superGemPoints -= penalty;
-                        totalSuperGems -= penalty;
-                    } else {
-                        // If user doesn't have enough SuperGems, set to 0
-                        uint256 lostAmount = userStats.superGemPoints;
-                        userStats.superGemPoints = 0;
-                        totalSuperGems -= lostAmount;
-                    }
-
-                    // Still count as a win for totalWins
-                    userStats.totalWins++;
-                    totalWins++;
-                } else {
-                    // Normal win or correct suit prediction
-                    userStats.streak++;
-                    userStats.totalWins++;
-                    totalWins++;
-
-                    uint256 multiplier = MembershipLib.getMultiplier(
-                        marketplace,
-                        msg.sender
-                    );
-                    uint256 streakBonus = MembershipLib.getStreakBonus(
-                        marketplace,
-                        msg.sender,
-                        userStats.streak
-                    );
-                    superGemEarned = MembershipLib.calculateSuperGems(
-                        isSuitWin,
-                        multiplier,
-                        streakBonus
-                    );
-
-                    // Apply 100x bonus for correct Joker prediction
-                    if (isJokerWin) {
-                        superGemEarned = GuessLib.applyJokerBonus(
-                            superGemEarned
-                        );
-                    }
-
-                    totalSuperGems += superGemEarned;
-                    userStats.superGemPoints += superGemEarned;
-
-                    // Add achievement bonus
-                    if (achievementBonus > 0) {
-                        totalSuperGems += achievementBonus;
-                        userStats.superGemPoints += achievementBonus;
-                    }
-
-                    if (userStats.streak > userStats.bestStreak) {
-                        userStats.bestStreak = userStats.streak;
-                    }
-                }
-            } else {
-                // Hi-Lo guess was wrong - check if it's a tie (same number)
-                bool isTie = (newNumber != 0) && (newNumber == currentNumber);
-
-                if (isTie) {
-                    // Tie: Same number appeared - streak doesn't break, but lose 1 SuperGem
-                    // Emit tie event
-                    emit TieResult(
-                        msg.sender,
-                        currentNumber,
-                        newNumber,
-                        block.timestamp
-                    );
-
-                    // Deduct 1 SuperGem for tie (wrong guess)
-                    uint256 penalty = Constants.HILO_WRONG_PENALTY;
-                    if (userStats.superGemPoints >= penalty) {
-                        userStats.superGemPoints -= penalty;
-                        totalSuperGems -= penalty;
-                    } else {
-                        // If user doesn't have enough SuperGems, set to 0
-                        uint256 lostAmount = userStats.superGemPoints;
-                        userStats.superGemPoints = 0;
-                        totalSuperGems -= lostAmount;
-                    }
-                } else {
-                    // Hi-Lo guess was wrong (not a tie) - check for streak protection
-                    uint256 batchHiloOldStreak = userStats.streak;
-                    consecutiveCorrectGuesses[msg.sender] = 0;
-                    IMarketplace marketplaceInterface = marketplace;
-                    bool hasProtection = CardWarsMarketplace(
-                        payable(address(marketplaceInterface))
-                    ).streakProtection(msg.sender);
-
-                    if (hasProtection) {
-                        // Streak protection active - don't break streak, consume protection
-                        CardWarsMarketplace(
-                            payable(address(marketplaceInterface))
-                        ).consumeStreakProtection(msg.sender);
-                    } else if (userStats.streak > 0) {
-                        emit StreakBroken(
-                            msg.sender,
-                            block.timestamp,
-                            batchHiloOldStreak
-                        );
-                        userStats.streak = 0;
-                    }
-
-                    // Deduct 1 SuperGem for wrong HiLo guess
-                    uint256 penalty = Constants.HILO_WRONG_PENALTY;
-                    if (userStats.superGemPoints >= penalty) {
-                        userStats.superGemPoints -= penalty;
-                        totalSuperGems -= penalty;
-                    } else {
-                        // If user doesn't have enough SuperGems, set to 0
-                        uint256 lostAmount = userStats.superGemPoints;
-                        userStats.superGemPoints = 0;
-                        totalSuperGems -= lostAmount;
-                    }
-                }
-            }
-
-            currentNumber = newNumber;
-            currentSuit = newSuit;
-
-            emit GuessResult(
-                msg.sender,
-                block.timestamp,
-                guessTypes[i] == 2, // higher (for backward compatibility)
-                guessedSuits[i],
-                newNumber,
-                newSuit,
-                isWin,
-                isSuitWin,
-                userStats.streak,
-                superGemEarned + achievementBonus,
-                userStats.totalPlays,
-                userStats.totalWins,
-                userStats.superGemPoints,
-                userStats.bestStreak
-            );
-
-            // Emit Joker card event if Joker was drawn
-            if (newNumber == 0) {
-                emit JokerCardDrawn(
-                    msg.sender,
-                    block.timestamp,
-                    isJokerWin ? Constants.JOKER_BONUS_MULTIPLIER : 0
-                );
-            }
-        }
-
-        userStats.currentNumber = currentNumber;
-        userStats.currentSuit = currentSuit;
-
-        // Consume credits: first use free daily guesses, then extra credits
-        CardWarsMarketplace marketplaceContractBatch = CardWarsMarketplace(
-            payable(address(marketplace))
-        );
-
-        for (uint256 i = 0; i < guessTypes.length; i++) {
-            // Skip credit consumption for first guess if Burn It is used
-            if (useBurnIt && i == 0) {
-                continue; // First guess uses Burn It, no additional credit needed
-            }
-
-            // Use free daily guesses first
-            if (dailyGuessCount[msg.sender] < Constants.DAILY_FREE_GUESSES) {
-                dailyGuessCount[msg.sender]++;
-            } else {
-                // Use extra credits
-                bool consumed = marketplaceContractBatch.consumeExtraCredits(
-                    msg.sender,
-                    1
-                );
-                if (!consumed) {
-                    revert InsufficientCredits();
-                }
-            }
-        }
-
-        uint256 batchSize = guessTypes.length;
-        if (totalGuesses > type(uint256).max - batchSize) {
-            revert Overflow();
-        }
-        if (userGuessCount[msg.sender] > type(uint256).max - batchSize) {
-            revert Overflow();
-        }
-        unchecked {
-            totalGuesses += batchSize;
-            userGuessCount[msg.sender] += batchSize;
-        }
-        ctx.completeEffects();
-
-        ctx.requireInteractions();
-        for (uint256 i = 0; i < guessTypes.length; i++) {
-            boostContract.consumeBoost(msg.sender);
-        }
-
-        if (oldBestStreak < userStats.bestStreak) {
-            emit BestStreakUpdated(
-                msg.sender,
-                block.timestamp,
-                oldBestStreak,
-                userStats.bestStreak
-            );
-        }
-
-        uint256 winRate = userStats.totalPlays > 0
-            ? (userStats.totalWins * 100) / userStats.totalPlays
-            : 0;
-
-        // Update weekly leaderboard for player (batch)
-        if (totalSuperGems > 0) {
-            _updateWeeklyPlayerLeaderboard(msg.sender, totalSuperGems);
-        }
-
-        emit BatchGuessResult(
-            msg.sender,
-            block.timestamp,
-            guessTypes.length,
-            totalWins,
-            totalSuperGems,
-            userStats.streak,
-            userStats.totalPlays,
-            userStats.totalWins,
-            userStats.superGemPoints,
-            userStats.bestStreak
-        );
-
-        emit StatsUpdated(
-            msg.sender,
-            block.timestamp,
-            userStats.totalPlays,
-            userStats.totalWins,
-            userStats.superGemPoints,
-            userStats.bestStreak,
-            userStats.streak,
-            winRate
-        );
-
-        _trackEvent(
-            msg.sender,
-            "BatchGuessResult",
-            abi.encode(guessTypes.length, totalWins, totalSuperGems)
         );
     }
 

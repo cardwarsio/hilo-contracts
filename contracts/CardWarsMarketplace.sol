@@ -122,10 +122,7 @@ contract CardWarsMarketplace is
     uint256 public totalItemsAdded;
     uint256 public totalPurchases;
 
-    // uint256 public totalDeposits;
     mapping(address => uint256) public userPurchaseCount;
-
-    // mapping(address => uint256) public userDepositCount;
     mapping(uint256 => uint256) public itemPurchaseCount;
     mapping(address => mapping(uint256 => uint256)) public userItemPurchases; // user => itemId => quantity
 
@@ -195,13 +192,6 @@ contract CardWarsMarketplace is
         uint256 indexed timestamp
     );
 
-    event Deposit(
-        address indexed user,
-        uint256 amount,
-        uint256 newBalance,
-        uint256 indexed timestamp
-    );
-
     event AdminWithdraw(
         address indexed admin,
         uint256 amount,
@@ -249,14 +239,6 @@ contract CardWarsMarketplace is
 
     event PaymentTokenRemoved(
         address indexed tokenAddress,
-        uint256 indexed timestamp
-    );
-
-    event TokenDeposit(
-        address indexed user,
-        address indexed tokenAddress,
-        uint256 amount,
-        uint256 newBalance,
         uint256 indexed timestamp
     );
 
@@ -783,10 +765,20 @@ contract CardWarsMarketplace is
         ctx.completeChecks();
 
         ctx.requireEffects();
-        if (item.paymentTokenType == PaymentToken.ERC20) {
+
+        // Cache item values to reduce storage reads
+        ItemType cachedItemType = item.itemType;
+        PaymentToken cachedPaymentTokenType = item.paymentTokenType;
+        address cachedPaymentToken = item.paymentToken;
+        uint256 cachedPrice = item.price;
+        MembershipTier cachedMembershipTier = item.membershipTier;
+        BoostType cachedBoostType = item.boostType;
+        uint256 cachedBoostDuration = item.boostDuration;
+
+        if (cachedPaymentTokenType == PaymentToken.ERC20) {
             // Transfer tokens from user to contract using SafeERC20
-            IERC20 token = IERC20(item.paymentToken);
-            token.safeTransferFrom(msg.sender, address(this), item.price);
+            IERC20 token = IERC20(cachedPaymentToken);
+            token.safeTransferFrom(msg.sender, address(this), cachedPrice);
         }
         // ETH payment is already received via msg.value
         unchecked {
@@ -804,21 +796,21 @@ contract CardWarsMarketplace is
             allUsers.push(msg.sender);
         }
 
-        if (item.itemType == ItemType.Membership) {
+        if (cachedItemType == ItemType.Membership) {
             MembershipTier oldTier = memberships[msg.sender].tier;
-            _activateMembership(msg.sender, item.membershipTier);
-            if (oldTier < item.membershipTier) {
+            _activateMembership(msg.sender, cachedMembershipTier);
+            if (oldTier < cachedMembershipTier) {
                 emit MembershipUpgraded(
                     msg.sender,
                     oldTier,
-                    item.membershipTier,
+                    cachedMembershipTier,
                     block.timestamp
                 );
             }
-        } else if (item.itemType == ItemType.Boost) {
+        } else if (cachedItemType == ItemType.Boost) {
             // Boost can always be purchased - uses are added to existing boost
-            _activateBoost(msg.sender, item.boostType, item.boostDuration);
-        } else if (item.itemType == ItemType.ExtraCredits) {
+            _activateBoost(msg.sender, cachedBoostType, cachedBoostDuration);
+        } else if (cachedItemType == ItemType.ExtraCredits) {
             // Extra credits can always be purchased - credits are added
             extraCredits[msg.sender] += Constants.EXTRA_CREDITS_AMOUNT;
             emit ExtraCreditsPurchased(
@@ -827,7 +819,7 @@ contract CardWarsMarketplace is
                 extraCredits[msg.sender],
                 block.timestamp
             );
-        } else if (item.itemType == ItemType.BurnIt) {
+        } else if (cachedItemType == ItemType.BurnIt) {
             // Burn It: Skip card, auto correct guess (1 item = 1 guess)
             burnItCredits[msg.sender] += 1;
             emit BurnItPurchased(
@@ -836,12 +828,12 @@ contract CardWarsMarketplace is
                 burnItCredits[msg.sender],
                 block.timestamp
             );
-        } else if (item.itemType == ItemType.BattleEmoji) {
+        } else if (cachedItemType == ItemType.BattleEmoji) {
             // Battle Emoji: Animated emoji to send to opponent after battle
             // Emojis are consumable - once used, they are consumed
             userBattleEmojis[msg.sender][_itemId] += 1;
             emit BattleEmojiPurchased(msg.sender, _itemId, block.timestamp);
-        } else if (item.itemType == ItemType.StreakProtection) {
+        } else if (cachedItemType == ItemType.StreakProtection) {
             // Streak protection: Prevents next loss from breaking streak
             streakProtection[msg.sender] = true;
             emit StreakProtectionActivated(msg.sender, block.timestamp);
@@ -1103,6 +1095,20 @@ contract CardWarsMarketplace is
             uint256(membership.purchasedAt),
             uint256(membership.expiresAt)
         );
+    }
+
+    function getMultiplierBoost(
+        address _user
+    ) external view override returns (uint256 multiplier, uint256 expiresAt) {
+        uint256 boost = multiplierBoost[_user];
+        uint256 expiry = multiplierBoostExpires[_user];
+
+        // Return boost only if it's active (non-zero and not expired)
+        if (boost > 0 && expiry > block.timestamp) {
+            return (boost, expiry);
+        }
+
+        return (0, 0);
     }
 
     function getUserBoost(

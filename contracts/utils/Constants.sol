@@ -13,19 +13,22 @@ library Constants {
 
     uint256 public constant JOKER_BONUS_MULTIPLIER = 100; // 100x bonus for correct Joker prediction
 
-    uint256 public constant MULTIPLIER_BASIC = 1;
-    uint256 public constant MULTIPLIER_PLUS = 2;
-    uint256 public constant MULTIPLIER_PRO = 3;
+    // Multipliers are stored as 10x (e.g., 15 = 1.5x, 20 = 2x, 30 = 3x)
+    uint256 public constant MULTIPLIER_BASIC = 15; // 1.5x (15/10)
+    uint256 public constant MULTIPLIER_PLUS = 20; // 2x (20/10)
+    uint256 public constant MULTIPLIER_PRO = 30; // 3x (30/10)
 
     uint256 public constant BASE_SUPERGEM_WIN = 1;
     uint256 public constant BASE_SUPERGEM_SUIT_WIN = 5; // 5 SuperGems for correct suit prediction
-    
+
     uint256 public constant SUIT_WRONG_PENALTY = 3; // SuperGems lost when suit prediction is wrong
     uint256 public constant HILO_WRONG_PENALTY = 1; // SuperGems lost when HiLo guess is wrong
 
     uint256 public constant STREAK_THRESHOLD_LOW = 5;
     uint256 public constant STREAK_THRESHOLD_HIGH = 10;
 
+    uint256 public constant STREAK_BONUS_BASIC_LOW = 1; // Basic membership: 1 SuperGem bonus at streak 5+
+    uint256 public constant STREAK_BONUS_BASIC_HIGH = 2; // Basic membership: 2 SuperGem bonus at streak 10+
     uint256 public constant STREAK_BONUS_PLUS_LOW = 1;
     uint256 public constant STREAK_BONUS_PLUS_HIGH = 3;
     uint256 public constant STREAK_BONUS_PRO_LOW = 2;
